@@ -1,0 +1,25 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 16
+VisualStudioVersion = 16.0.31402.337
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ASFGameBuyPlugin", "ASFGameBuyPlugin\ASFGameBuyPlugin.csproj", "{F63B86F0-56E0-4BA1-9E26-7725E016298A}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{F63B86F0-56E0-4BA1-9E26-7725E016298A}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{F63B86F0-56E0-4BA1-9E26-7725E016298A}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{F63B86F0-56E0-4BA1-9E26-7725E016298A}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{F63B86F0-56E0-4BA1-9E26-7725E016298A}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ExtensibilityGlobals) = postSolution
+		SolutionGuid = {4A6D9F76-9B6B-46F1-B56A-6FCD612A03CA}
+	EndGlobalSection
+EndGlobal
