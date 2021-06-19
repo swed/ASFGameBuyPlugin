@@ -2,6 +2,7 @@
 using System.Collections.Generic;
 using System.Linq;
 using System.Text;
+using System.Net;
 using System.Threading.Tasks;
 using ArchiSteamFarm.Steam;
 
@@ -12,7 +13,7 @@ namespace ASFGameBuyPlugin
         private Bot Bot;
         internal SteamStore(Bot bot) => Bot = bot;
 
-        internal async Task<Dictionary<string, string>[]?> GetAllSubID(uint appID)
+        private async Task<Dictionary<string, string>[]?> GetAllSubID(uint appID)
         {
             if (appID == 0)
                 throw new ArgumentException("appID cannot be 0");
@@ -25,8 +26,17 @@ namespace ASFGameBuyPlugin
 
             const string STORE_URL = "https://store.steampowered.com/app/{0}/";
             Uri storeUri = new(string.Format(STORE_URL, appID));
+
+            // Bypass age check by set Jan-1-1990 cookie header
+            Bot.ArchiWebHandler.WebBrowser.CookieContainer.Add(new Cookie()
+            {
+                Name = "birthtime",
+                Value = "628466401",
+                Domain = ArchiSteamFarm.Steam.Integration.ArchiWebHandler.SteamStoreURL.Host
+            });
+
             var response = await Bot.ArchiWebHandler.UrlGetToHtmlDocumentWithSession(storeUri);
-            if (response == null || response.StatusCode != System.Net.HttpStatusCode.OK)
+            if (response == null || response.StatusCode != HttpStatusCode.OK)
             {
                 Bot.ArchiLogger.LogGenericError($"Unable to download app {appID} page");
                 return null;
@@ -57,7 +67,11 @@ namespace ASFGameBuyPlugin
                     if (formElement == null)
                         continue;
 
-                    serializableForm.Add(formElement.NodeName, formElement.NodeValue);
+                    string name = formElement.GetAttribute("name");
+                    string value = formElement.GetAttribute("value");
+
+                    if (!string.IsNullOrEmpty(name) && !string.IsNullOrEmpty(value))
+                        serializableForm.Add(name, value);
                 }
 
                 serializableForms.Add(serializableForm);
