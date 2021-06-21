@@ -7,6 +7,7 @@
 
   <ItemGroup>
     <PackageReference Include="AngleSharp" Version="0.14.0" />
+    <PackageReference Include="Newtonsoft.Json" Version="13.0.1" />
     <PackageReference Include="System.Composition.AttributedModel" Version="5.0.1" IncludeAssets="compile" />
   </ItemGroup>
 

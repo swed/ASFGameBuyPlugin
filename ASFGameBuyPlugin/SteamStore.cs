@@ -13,10 +13,10 @@ namespace ASFGameBuyPlugin
         private Bot Bot;
         internal SteamStore(Bot bot) => Bot = bot;
 
-        private async Task<Dictionary<string, string>[]?> GetAllSubID(uint appID)
+        private async Task<AppInfo[]?> GetAppInfo(uint appID)
         {
             if (appID == 0)
-                throw new ArgumentException("appID cannot be 0");
+                throw new ArgumentException($"{nameof(appID)} cannot be 0");
 
             if (!Bot.IsConnectedAndLoggedOn)
             {
@@ -42,6 +42,22 @@ namespace ASFGameBuyPlugin
                 return null;
             }
 
+            const string META_SELECTOR = "meta[property = 'og:url']";
+            var meta = response.Content.QuerySelector(META_SELECTOR);
+
+            if (meta == null)
+            {
+                Bot.ArchiLogger.LogGenericError($"Unable to get referer link for {appID} page. Selector null");
+                return null;
+            }
+
+            string refererLink = meta.GetAttribute("content");
+            if (string.IsNullOrWhiteSpace(refererLink))
+            {
+                Bot.ArchiLogger.LogGenericError($"Unable to get referer link for {appID} page. Content is empty");
+                return null;
+            }
+
             const string BUY_FORM_SELECTOR = ".game_area_purchase_game_wrapper > .game_area_purchase_game form";
             var buyForms = response.Content.QuerySelectorAll(BUY_FORM_SELECTOR);
 
@@ -51,33 +67,211 @@ namespace ASFGameBuyPlugin
                 return null;
             }
 
-            List<Dictionary<string, string>> serializableForms = new(buyForms.Length);
+            List<AppInfo> appInfos = new(buyForms.Length);
             foreach (var form in buyForms)
             {
                 if (form == null)
                     continue;
 
-                var formElements = form.QuerySelectorAll("input");
-                if (formElements == null || formElements.Length == 0)
+                var inputs = form.QuerySelectorAll("input");
+                if (inputs == null || inputs.Length == 0)
                     continue;
 
-                Dictionary<string, string> serializableForm = new();
-                foreach (var formElement in formElements)
+                AppForm serializableForm = new();
+                foreach (var input in inputs)
                 {
-                    if (formElement == null)
+                    if (input == null)
                         continue;
 
-                    string name = formElement.GetAttribute("name");
-                    string value = formElement.GetAttribute("value");
+                    string name = input.GetAttribute("name");
+                    string value = input.GetAttribute("value");
 
                     if (!string.IsNullOrEmpty(name) && !string.IsNullOrEmpty(value))
                         serializableForm.Add(name, value);
                 }
 
-                serializableForms.Add(serializableForm);
+                // SubID  has the highest priority for the plugin to work
+                if (string.IsNullOrEmpty(serializableForm.SubID))
+                    continue;
+
+                const string PRICE_ATTRIBUTE = "data-price-final";
+                var purchaseElement = form.QuerySelector($".game_purchase_action [{PRICE_ATTRIBUTE}]");
+
+                if (purchaseElement == null)
+                    continue;
+
+                string priceString = purchaseElement.GetAttribute(PRICE_ATTRIBUTE);
+                if (string.IsNullOrWhiteSpace(priceString))
+                    continue;
+
+                if (!ulong.TryParse(priceString, out ulong price))
+                    continue;
+
+                appInfos.Add(new (price, serializableForm, new(refererLink)));
             }
 
-            return serializableForms.ToArray();
+            return appInfos.ToArray();
+        }
+
+        private async Task<Uri?> AddToCart(AppForm form, Uri referer)
+        {
+            if (form.Count == 0 || string.IsNullOrEmpty(form.SubID))
+                throw new ArgumentException($"{nameof(form)} is invalid");
+
+            const string CART_URL = "https://store.steampowered.com/cart/";
+            Uri cartUri = new(CART_URL);
+
+            var response = await Bot.ArchiWebHandler.UrlPostToHtmlDocumentWithSession(cartUri, data: form, referer: referer);
+
+            if (response == null || response.StatusCode != HttpStatusCode.OK)
+            {
+                Bot.ArchiLogger.LogGenericError($"Unable to add {form.SubID} form to cart");
+                return null;
+            }
+
+            const string PURCHASE_BTN_SELECTOR = "#btn_purchase_self";
+            var btn = response.Content.QuerySelector(PURCHASE_BTN_SELECTOR);
+
+            if (btn == null)
+            {
+                Bot.ArchiLogger.LogGenericError($"Unable to find purchase link for {form.SubID} form");
+                return null;
+            }
+
+            string purchaseLink = btn.GetAttribute("href");
+
+            if (string.IsNullOrWhiteSpace(purchaseLink))
+            {
+                Bot.ArchiLogger.LogGenericError($"Unable to get purchase link for {form.SubID} form");
+                return null;
+            }
+
+            return new(purchaseLink);
+        }
+
+        private async Task<TransactionInfo?> Checkout(Uri checkoutUri)
+        {
+            var response = await Bot.ArchiWebHandler.UrlGetToHtmlDocumentWithSession(checkoutUri);
+
+            if (response == null || response.StatusCode != HttpStatusCode.OK)
+            {
+                Bot.ArchiLogger.LogGenericError($"Unable to checkout {checkoutUri.AbsoluteUri}");
+                return null;
+            }
+
+            string errorMsg = $"Unable to checkout {checkoutUri.AbsoluteUri}";
+            string shoppingCartIDString = GetValueAttributeBySelectorID("shopping_cart_gid");
+            if (string.IsNullOrEmpty(shoppingCartIDString))
+            {
+                Bot.ArchiLogger.LogGenericError(errorMsg);
+                return null;
+            }
+            // Additional check that value is valid
+            if (!ulong.TryParse(shoppingCartIDString, out ulong shoppingCartID))
+            {
+                Bot.ArchiLogger.LogGenericError($"{errorMsg}. {nameof(shoppingCartID)} is not ulong");
+                return null;
+            }
+
+            string transactionIDString = GetValueAttributeBySelectorID("transaction_id");
+            if (string.IsNullOrEmpty(transactionIDString))
+            {
+                Bot.ArchiLogger.LogGenericError(errorMsg);
+                return null;
+            }
+            if (!long.TryParse(transactionIDString, out long transactionID))
+            {
+                Bot.ArchiLogger.LogGenericError($"{errorMsg}. {nameof(transactionID)} is not long");
+                return null;
+            }
+
+            string paymentMethod = GetValueAttributeBySelectorID("payment_method");
+            if (string.IsNullOrEmpty(paymentMethod))
+            {
+                Bot.ArchiLogger.LogGenericError(errorMsg);
+                return null;
+            }
+
+            string shippingCountry = GetValueAttributeBySelectorID("shipping_country");
+            if (string.IsNullOrEmpty(shippingCountry))
+            {
+                Bot.ArchiLogger.LogGenericError(errorMsg);
+                return null;
+            }
+
+            return new(shoppingCartID, transactionID, paymentMethod, shippingCountry);
+
+            string GetValueAttributeBySelectorID(string selector)
+            {
+                if (string.IsNullOrWhiteSpace(selector))
+                    throw new ArgumentException($"{nameof(selector)} is empty");
+
+                if (response == null)
+                    throw new InvalidOperationException($"{nameof(response)} is null");
+
+                var elementByID = response.Content.QuerySelector($"#{selector}");
+
+                if (elementByID == null)
+                {
+                    Bot.ArchiLogger.LogGenericError($"Unable to find by selector: {selector}");
+                    return string.Empty;
+                }
+
+                string value = elementByID.GetAttribute("value");
+
+                if (string.IsNullOrWhiteSpace(value))
+                {
+                    Bot.ArchiLogger.LogGenericError($"Value attribute is missing in element by selector: {selector}");
+                    return string.Empty;
+                }
+
+                return value;
+            }
+        }
+
+        private async Task<JsonData.InitTransactionJsonResponse> InitTransaction(TransactionInfo transactionInfo)
+        {
+            Dictionary<string, string> postData = new()
+            {
+                { "gidShoppingCart", transactionInfo.ShoppingCart.ToString() },
+                { "gidReplayOfTransID", transactionInfo.TransactionID.ToString() },
+                { "PaymentMethod", transactionInfo.PaymentMethod },
+                { "abortPendingTransactions", "0" }
+            }
+        }
+
+        internal record AppInfo(ulong Price, AppForm AppForm, Uri Referer);
+
+        internal class AppForm: Dictionary<string, string>
+        {
+            internal string SubID 
+            {
+                get
+                {
+                    if (!ContainsKey("subid"))
+                        return string.Empty;
+                    return this["subid"];
+                }
+            }
+        }
+
+        internal class TransactionInfo
+        {
+            internal ulong ShoppingCart { get; init; }
+            internal long TransactionID { get; init; }
+            internal string PaymentMethod { get; init; }
+            internal string ShippingCountry { get; init; }
+
+            internal TransactionInfo(ulong shoppingCart, long transactionID, string paymentMethod, string shippingCountry)
+            {
+                if (string.IsNullOrWhiteSpace(paymentMethod) || string.IsNullOrWhiteSpace(shippingCountry))
+                    throw new ArgumentException($"{nameof(paymentMethod)} and {nameof(shippingCountry)} must be filled");
+
+                ShoppingCart = shoppingCart;
+                TransactionID = transactionID;
+                PaymentMethod = paymentMethod;
+                ShippingCountry = shippingCountry;
+            }
         }
     }
 }
