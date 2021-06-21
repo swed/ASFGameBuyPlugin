@@ -232,6 +232,9 @@ namespace ASFGameBuyPlugin
 
         private async Task<JsonData.InitTransactionJsonResponse?> InitTransaction(TransactionInfo transactionInfo, Uri referer)
         {
+            if (transactionInfo.ShoppingCart == 0 || string.IsNullOrWhiteSpace(transactionInfo.ShippingCountry) || string.IsNullOrWhiteSpace(transactionInfo.PaymentMethod))
+                throw new ArgumentException($"{nameof(transactionInfo)} is invalid");
+
             Dictionary<string, string> postData = new()
             {
                 { "gidShoppingCart", transactionInfo.ShoppingCart.ToString() },
@@ -299,7 +302,19 @@ namespace ASFGameBuyPlugin
             return response.Content;
         }
 
-        private async Task<>
+        private async Task<JsonData.FinalPriceJsonResponse> GetFinalPrice(TransactionInfo transactionInfo, JsonData.InitTransactionJsonResponse initTransactionJsonResponse)
+        {
+            if (transactionInfo.ShoppingCart == 0 || string.IsNullOrWhiteSpace(transactionInfo.ShippingCountry) || string.IsNullOrWhiteSpace(transactionInfo.PaymentMethod))
+                throw new ArgumentException($"{nameof(transactionInfo)} is invalid");
+
+            if (string.IsNullOrWhiteSpace(initTransactionJsonResponse.TransactionID))
+                throw new ArgumentException($"{nameof(initTransactionJsonResponse)} is invalid");
+
+            string getFinalPriceUrl = $"/checkout/getfinalprice/?count=1&transid={initTransactionJsonResponse.TransactionID}6&purchasetype=self&microtxnid=-1&cart={transactionInfo.ShoppingCart}&gidReplayOfTransID={transactionInfo.TransactionID}";
+            Uri uri = new(ArchiWebHandler.SteamStoreURL, getFinalPriceUrl);
+
+            var response = await Bot.ArchiWebHandler.WebBrowser.UrlGetToJsonObject<JsonData.FinalPriceJsonResponse>(uri)
+        }
 
         internal record AppInfo(ulong Price, AppForm AppForm, Uri Referer);
 
