@@ -5,6 +5,7 @@ using System.Text;
 using System.Net;
 using System.Threading.Tasks;
 using ArchiSteamFarm.Steam;
+using ArchiSteamFarm.Steam.Integration;
 
 namespace ASFGameBuyPlugin
 {
@@ -24,15 +25,15 @@ namespace ASFGameBuyPlugin
                 return null;
             }
 
-            const string STORE_URL = "https://store.steampowered.com/app/{0}/";
-            Uri storeUri = new(string.Format(STORE_URL, appID));
+            const string STORE_URL = "/app/{0}/";
+            Uri storeUri = new(ArchiWebHandler.SteamStoreURL, string.Format(STORE_URL, appID));
 
             // Bypass age check by set Jan-1-1990 cookie header
             Bot.ArchiWebHandler.WebBrowser.CookieContainer.Add(new Cookie()
             {
                 Name = "birthtime",
                 Value = "628466401",
-                Domain = ArchiSteamFarm.Steam.Integration.ArchiWebHandler.SteamStoreURL.Host
+                Domain = ArchiWebHandler.SteamStoreURL.Host
             });
 
             var response = await Bot.ArchiWebHandler.UrlGetToHtmlDocumentWithSession(storeUri);
@@ -118,8 +119,8 @@ namespace ASFGameBuyPlugin
             if (form.Count == 0 || string.IsNullOrEmpty(form.SubID))
                 throw new ArgumentException($"{nameof(form)} is invalid");
 
-            const string CART_URL = "https://store.steampowered.com/cart/";
-            Uri cartUri = new(CART_URL);
+            const string CART_URL = "/cart/";
+            Uri cartUri = new(ArchiWebHandler.SteamStoreURL, CART_URL);
 
             var response = await Bot.ArchiWebHandler.UrlPostToHtmlDocumentWithSession(cartUri, data: form, referer: referer);
 
@@ -151,7 +152,7 @@ namespace ASFGameBuyPlugin
 
         private async Task<TransactionInfo?> Checkout(Uri checkoutUri)
         {
-            var response = await Bot.ArchiWebHandler.UrlGetToHtmlDocumentWithSession(checkoutUri);
+            var response = await Bot.ArchiWebHandler.WebBrowser.UrlGetToHtmlDocument(checkoutUri);
 
             if (response == null || response.StatusCode != HttpStatusCode.OK)
             {
@@ -229,16 +230,76 @@ namespace ASFGameBuyPlugin
             }
         }
 
-        private async Task<JsonData.InitTransactionJsonResponse> InitTransaction(TransactionInfo transactionInfo)
+        private async Task<JsonData.InitTransactionJsonResponse?> InitTransaction(TransactionInfo transactionInfo, Uri referer)
         {
             Dictionary<string, string> postData = new()
             {
                 { "gidShoppingCart", transactionInfo.ShoppingCart.ToString() },
                 { "gidReplayOfTransID", transactionInfo.TransactionID.ToString() },
                 { "PaymentMethod", transactionInfo.PaymentMethod },
-                { "abortPendingTransactions", "0" }
+                { "abortPendingTransactions", "0" },
+                { "bHasCardInfo", "0" },
+                { "CardNumber", string.Empty },
+                { "CardExpirationYear", string.Empty },
+                { "CardExpirationMonth", string.Empty },
+                { "FirstName", string.Empty },
+                { "LastName", string.Empty },
+                { "Address", string.Empty },
+                { "AddressTwo", string.Empty },
+                { "Country", transactionInfo.ShippingCountry },
+                { "City", string.Empty },
+                { "State", string.Empty },
+                { "PostalCode", string.Empty },
+                { "Phone", string.Empty },
+                { "ShippingFirstName", string.Empty },
+                { "ShippingLastName", string.Empty },
+                { "ShippingAddress", string.Empty },
+                { "ShippingAddressTwo", string.Empty },
+                { "ShippingCountry", transactionInfo.ShippingCountry },
+                { "ShippingCity", string.Empty },
+                { "ShippingState", string.Empty },
+                { "ShippingPostalCode", string.Empty },
+                { "ShippingPhone", string.Empty },
+                { "bIsGift", "0" },
+                { "GifteeAccountID", "0" },
+                { "GifteeEmail", string.Empty },
+                { "GifteeName", string.Empty },
+                { "GiftMessage", string.Empty },
+                { "Sentiment", string.Empty },
+                { "Signature", string.Empty },
+                { "ScheduledSendOnDate", "0" },
+                { "BankAccount", string.Empty },
+                { "BankCode", string.Empty },
+                { "BankIBAN", string.Empty },
+                { "BankBIC", string.Empty },
+                { "TPBankID", string.Empty },
+                { "bSaveBillingAddress", "1" },
+                { "gidPaymentID", string.Empty },
+                { "bUseRemainingSteamAccount", "1" },
+                { "bPreAuthOnly", "0" }
+            };
+
+            const string INITTRANSACTION_URL = "/checkout/inittransaction/";
+            Uri uri = new(ArchiWebHandler.SteamStoreURL, INITTRANSACTION_URL);
+
+            var response = await Bot.ArchiWebHandler.UrlPostToJsonObjectWithSession<JsonData.InitTransactionJsonResponse>(uri, data: postData, referer: referer);
+
+            if (response == null || response.StatusCode != HttpStatusCode.OK)
+            {
+                Bot.ArchiLogger.LogGenericError($"Unable to initiate transaction {uri.AbsoluteUri}");
+                return null;
             }
+
+            if (response.Content.Success != 1 || string.IsNullOrWhiteSpace(response.Content.TransactionID))
+            {
+                Bot.ArchiLogger.LogGenericError($"Initiate transaction at {uri.AbsoluteUri} returns unsuccessful data / {response.Content.Success} / {response.Content.TransactionID ?? string.Empty}");
+                return null;
+            }
+
+            return response.Content;
         }
+
+        private async Task<>
 
         internal record AppInfo(ulong Price, AppForm AppForm, Uri Referer);
 
