@@ -9,12 +9,18 @@ using ArchiSteamFarm.Steam.Integration;
 
 namespace ASFGameBuyPlugin
 {
-    internal class SteamStore
+    internal sealed class SteamStore
     {
         private Bot Bot;
         internal SteamStore(Bot bot) => Bot = bot;
 
-        private async Task<AppInfo[]?> GetAppInfo(uint appID)
+        internal async Task<bool> BuyGameAsync(uint appID, uint subID)
+        {
+            if (appID == 0 || subID == 0)
+                return false;
+        }
+
+        private async Task<AppInfo[]?> GetAppInfoAsync(uint appID)
         {
             if (appID == 0)
                 throw new ArgumentException($"{nameof(appID)} cannot be 0");
@@ -114,7 +120,7 @@ namespace ASFGameBuyPlugin
             return appInfos.ToArray();
         }
 
-        private async Task<Uri?> AddToCart(AppForm form, Uri referer)
+        private async Task<Uri?> AddToCartAsync(AppForm form, Uri referer)
         {
             if (form.Count == 0 || string.IsNullOrEmpty(form.SubID))
                 throw new ArgumentException($"{nameof(form)} is invalid");
@@ -150,7 +156,7 @@ namespace ASFGameBuyPlugin
             return new(purchaseLink);
         }
 
-        private async Task<TransactionInfo?> Checkout(Uri checkoutUri)
+        private async Task<TransactionInfo?> CheckoutAsync(Uri checkoutUri)
         {
             var response = await Bot.ArchiWebHandler.WebBrowser.UrlGetToHtmlDocument(checkoutUri);
 
@@ -230,7 +236,7 @@ namespace ASFGameBuyPlugin
             }
         }
 
-        private async Task<JsonData.InitTransactionJsonResponse?> InitTransaction(TransactionInfo transactionInfo, Uri referer)
+        private async Task<JsonData.InitTransactionJsonResponse?> InitTransactionAsync(TransactionInfo transactionInfo, Uri referer)
         {
             if (transactionInfo.ShoppingCart == 0 || string.IsNullOrWhiteSpace(transactionInfo.ShippingCountry) || string.IsNullOrWhiteSpace(transactionInfo.PaymentMethod))
                 throw new ArgumentException($"{nameof(transactionInfo)} is invalid");
@@ -302,7 +308,7 @@ namespace ASFGameBuyPlugin
             return response.Content;
         }
 
-        private async Task<JsonData.FinalPriceJsonResponse> GetFinalPrice(TransactionInfo transactionInfo, JsonData.InitTransactionJsonResponse initTransactionJsonResponse)
+        private async Task<JsonData.FinalPriceJsonResponse?> GetFinalPriceAsync(TransactionInfo transactionInfo, JsonData.InitTransactionJsonResponse initTransactionJsonResponse, Uri referer)
         {
             if (transactionInfo.ShoppingCart == 0 || string.IsNullOrWhiteSpace(transactionInfo.ShippingCountry) || string.IsNullOrWhiteSpace(transactionInfo.PaymentMethod))
                 throw new ArgumentException($"{nameof(transactionInfo)} is invalid");
@@ -313,7 +319,55 @@ namespace ASFGameBuyPlugin
             string getFinalPriceUrl = $"/checkout/getfinalprice/?count=1&transid={initTransactionJsonResponse.TransactionID}6&purchasetype=self&microtxnid=-1&cart={transactionInfo.ShoppingCart}&gidReplayOfTransID={transactionInfo.TransactionID}";
             Uri uri = new(ArchiWebHandler.SteamStoreURL, getFinalPriceUrl);
 
-            var response = await Bot.ArchiWebHandler.WebBrowser.UrlGetToJsonObject<JsonData.FinalPriceJsonResponse>(uri)
+            var response = await Bot.ArchiWebHandler.WebBrowser.UrlGetToJsonObject<JsonData.FinalPriceJsonResponse>(uri, referer: referer);
+
+            if (response == null || response.StatusCode != HttpStatusCode.OK)
+            {
+                Bot.ArchiLogger.LogGenericError($"Unable to finalize price {uri.AbsoluteUri}");
+                return null;
+            }
+
+            if (response.Content.Success != 1)
+            {
+                Bot.ArchiLogger.LogGenericError($"Finalize price at {uri.AbsoluteUri} returns unsuccessful data / {response.Content.Success}");
+                return null;
+            }
+
+            return response.Content;
+        }
+
+        private async Task<bool> FinalizeTransactionAsync(JsonData.InitTransactionJsonResponse initTransactionJsonResponse, Uri referer)
+        {
+            if (string.IsNullOrWhiteSpace(initTransactionJsonResponse.TransactionID))
+                throw new ArgumentException($"{nameof(initTransactionJsonResponse)} is invalid");
+
+            const string FINALIZE_TRANSACTION_URL = "/checkout/finalizetransaction/";
+            Uri uri = new(ArchiWebHandler.SteamStoreURL, FINALIZE_TRANSACTION_URL);
+
+            const string BROWSER_INFO_HARDCODE = "{\"language\":\"en\",\"javaEnabled\":\"false\",\"colorDepth\":24,\"screenHeight\":768,\"screenWidth\":1366}";
+            Dictionary<string, string> postData = new()
+            {
+                { "transid", initTransactionJsonResponse.TransactionID },
+                { "CardCVV2", string.Empty },
+                { "browserInfo", BROWSER_INFO_HARDCODE }
+            };
+
+            var response = await Bot.ArchiWebHandler.WebBrowser.UrlPostToJsonObject<JsonData.FinalizeTransactionJsonResponse, Dictionary<string, string>>(uri, data: postData, referer: referer);
+
+            if (response == null || response.StatusCode != HttpStatusCode.OK)
+            {
+                Bot.ArchiLogger.LogGenericError($"Unable to finalize transaction {uri.AbsoluteUri}");
+                return false;
+            }
+
+            const int SUCCESS_CODE = 22;
+            if (response.Content.Success != SUCCESS_CODE)
+            {
+                Bot.ArchiLogger.LogGenericError($"Finalize transaction at {uri.AbsoluteUri} returns unsuccessful data / {response.Content.Success}");
+                return false;
+            }
+
+            return true;
         }
 
         internal record AppInfo(ulong Price, AppForm AppForm, Uri Referer);
