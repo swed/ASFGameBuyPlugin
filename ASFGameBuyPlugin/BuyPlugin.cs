@@ -8,7 +8,7 @@ using ArchiSteamFarm.Steam;
 namespace ASFGameBuyPlugin
 {
     [Export(typeof(IPlugin))]
-    public class BuyPlugin: 
+    public sealed class BuyPlugin: 
         IPlugin,
         IBotCommand
     {
@@ -26,10 +26,15 @@ namespace ASFGameBuyPlugin
             switch (command)
             {
                 case "buygame":
-                    return await Commands.BuyGameCommandAsync(bot, steamID);
+                    return await Commands.BuyGameCommandAsync(steamID, args[1], uint.Parse(args[2]), uint.Parse(args[3]));
                 default:
                     return null;
             }
         }
+    }
+
+    internal static class Constants
+    {
+        internal static TimeSpan BuyDelay = TimeSpan.FromSeconds(15);
     }
 }

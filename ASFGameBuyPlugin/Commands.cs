@@ -4,31 +4,59 @@ using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
 using ArchiSteamFarm.Steam;
+using ArchiSteamFarm.Steam.Storage;
 
 namespace ASFGameBuyPlugin
 {
     internal static class Commands
     {
-        internal static async Task<string> BuyGameCommandAsync(Bot bot, ulong steamID)
+        internal static async Task<string> BuyGameCommandAsync(ulong steamID, string botsQuery, uint appID, uint subID)
         {
-            if (!bot.IsConnectedAndLoggedOn)
-                return $"<{bot.BotName}> Is not logged on";
+            if (string.IsNullOrWhiteSpace(botsQuery))
+                throw new ArgumentNullException($"{botsQuery} is empty");
 
-            SteamStore steamStore = new(bot);
-            var subIDs = await steamStore.GetAllSubID(623280);
-            if (subIDs == null)
-                return $"<{bot.BotName}> {nameof(steamStore.GetAllSubID)} return null";
+            if (appID == 0)
+                throw new ArgumentException($"{appID} is zero");
+
+            if (subID == 0)
+                throw new ArgumentException($"{subID} is zero");
+
+            HashSet<Bot>? bots = Bot.GetBots(botsQuery);
+            if (bots == null || bots.Count == 0)
+                return $"Bots by query \"{botsQuery}\" not found";
 
             StringBuilder stringBuilder = new();
-            foreach (var subID in subIDs)
+
+            foreach (var bot in bots)
             {
-                if (subID == null)
+                if (!bot.IsConnectedAndLoggedOn)
+                {
+                    stringBuilder.AppendLine($"<{bot.BotName}> Is not logged on");
                     continue;
+                }
 
-                foreach (var keyValue in subID)
-                    stringBuilder.AppendLine($"{keyValue.Key}: {keyValue.Value}");
+                if (!bot.HasAccess(steamID, BotConfig.EAccess.Operator))
+                {
+                    stringBuilder.AppendLine($"<{bot.BotName}> Has no access from SteamID: {steamID}");
+                    continue;
+                }
 
-                stringBuilder.AppendLine("----------");
+                SteamStore steamStore = new(bot);
+
+                bot.ArchiLogger.LogGenericInfo($"Buying {appID} / {subID}");
+
+                if (await steamStore.BuyGameAsync(appID, subID))
+                {
+                    stringBuilder.AppendLine($"<{bot.BotName}> Purchased {appID} / {subID}");
+                    bot.ArchiLogger.LogGenericInfo($"Purchased {appID} / {subID}");
+                }
+                else
+                {
+                    stringBuilder.AppendLine($"<{bot.BotName}> Unable to purchase {appID} / {subID}");
+                    bot.ArchiLogger.LogGenericInfo($"Unable to purchase {appID} / {subID}");
+                }
+
+                await Task.Delay(Constants.BuyDelay);
             }
 
             return stringBuilder.ToString();

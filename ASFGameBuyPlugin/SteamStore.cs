@@ -18,6 +18,51 @@ namespace ASFGameBuyPlugin
         {
             if (appID == 0 || subID == 0)
                 return false;
+
+            var appInfos = await GetAppInfoAsync(appID);
+
+            if (appInfos == null)
+                return false;
+
+            AppInfo? suitaleAppInfo = null;
+            foreach (var appInfo in appInfos)
+            {
+                Bot.ArchiLogger.LogGenericInfo($"Current subID: {appInfo.AppForm.SubID}.");
+
+                if (appInfo == null)
+                    continue;
+
+                if (appInfo.AppForm.SubID == subID)
+                {
+                    suitaleAppInfo = appInfo;
+                    break;
+                }
+            }
+
+            if (suitaleAppInfo == null)
+            {
+                Bot.ArchiLogger.LogGenericError($"Unable to found {subID} for {appID}");
+                return false;
+            }
+
+            var checkoutLink = await AddToCartAsync(suitaleAppInfo);
+            if (checkoutLink == null)
+                return false;
+
+            var transactionInfo = await CheckoutAsync(checkoutLink);
+            if (transactionInfo == null)
+                return false;
+
+            var initTransactionInfo = await InitTransactionAsync(transactionInfo, checkoutLink);
+            if (initTransactionInfo == null)
+                return false;
+
+            var finalPriceInfo = await GetFinalPriceAsync(transactionInfo, initTransactionInfo, checkoutLink);
+            if (finalPriceInfo == null)
+                return false;
+
+            var finalizeTransaction = await FinalizeTransactionAsync(initTransactionInfo, checkoutLink);
+            return finalizeTransaction;
         }
 
         private async Task<AppInfo[]?> GetAppInfoAsync(uint appID)
@@ -54,14 +99,14 @@ namespace ASFGameBuyPlugin
 
             if (meta == null)
             {
-                Bot.ArchiLogger.LogGenericError($"Unable to get referer link for {appID} page. Selector null");
+                Bot.ArchiLogger.LogGenericError($"Unable to get link for {appID} page. Selector null");
                 return null;
             }
 
             string refererLink = meta.GetAttribute("content");
             if (string.IsNullOrWhiteSpace(refererLink))
             {
-                Bot.ArchiLogger.LogGenericError($"Unable to get referer link for {appID} page. Content is empty");
+                Bot.ArchiLogger.LogGenericError($"Unable to get link for {appID} page. Content is empty");
                 return null;
             }
 
@@ -94,11 +139,14 @@ namespace ASFGameBuyPlugin
                     string value = input.GetAttribute("value");
 
                     if (!string.IsNullOrEmpty(name) && !string.IsNullOrEmpty(value))
+                    {
+                        Bot.ArchiLogger.LogGenericInfo($"Added: {name} / {value}");
                         serializableForm.Add(name, value);
+                    }
                 }
 
                 // SubID  has the highest priority for the plugin to work
-                if (string.IsNullOrEmpty(serializableForm.SubID))
+                if (serializableForm.SubID == 0)
                     continue;
 
                 const string PRICE_ATTRIBUTE = "data-price-final";
@@ -120,19 +168,19 @@ namespace ASFGameBuyPlugin
             return appInfos.ToArray();
         }
 
-        private async Task<Uri?> AddToCartAsync(AppForm form, Uri referer)
+        private async Task<Uri?> AddToCartAsync(AppInfo appInfo)
         {
-            if (form.Count == 0 || string.IsNullOrEmpty(form.SubID))
-                throw new ArgumentException($"{nameof(form)} is invalid");
+            if (appInfo.AppForm.Count == 0 || appInfo.AppForm.SubID == 0)
+                throw new ArgumentException($"{nameof(appInfo)} is invalid");
 
             const string CART_URL = "/cart/";
             Uri cartUri = new(ArchiWebHandler.SteamStoreURL, CART_URL);
 
-            var response = await Bot.ArchiWebHandler.UrlPostToHtmlDocumentWithSession(cartUri, data: form, referer: referer);
+            var response = await Bot.ArchiWebHandler.UrlPostToHtmlDocumentWithSession(cartUri, data: appInfo.AppForm, referer: appInfo.Referer);
 
             if (response == null || response.StatusCode != HttpStatusCode.OK)
             {
-                Bot.ArchiLogger.LogGenericError($"Unable to add {form.SubID} form to cart");
+                Bot.ArchiLogger.LogGenericError($"Unable to add {appInfo.AppForm.SubID} form to cart");
                 return null;
             }
 
@@ -141,7 +189,7 @@ namespace ASFGameBuyPlugin
 
             if (btn == null)
             {
-                Bot.ArchiLogger.LogGenericError($"Unable to find purchase link for {form.SubID} form");
+                Bot.ArchiLogger.LogGenericError($"Unable to find purchase link for {appInfo.AppForm.SubID} form");
                 return null;
             }
 
@@ -149,7 +197,7 @@ namespace ASFGameBuyPlugin
 
             if (string.IsNullOrWhiteSpace(purchaseLink))
             {
-                Bot.ArchiLogger.LogGenericError($"Unable to get purchase link for {form.SubID} form");
+                Bot.ArchiLogger.LogGenericError($"Unable to get purchase link for {appInfo.AppForm.SubID} form");
                 return null;
             }
 
@@ -374,13 +422,16 @@ namespace ASFGameBuyPlugin
 
         internal class AppForm: Dictionary<string, string>
         {
-            internal string SubID 
+            internal uint SubID 
             {
                 get
                 {
                     if (!ContainsKey("subid"))
-                        return string.Empty;
-                    return this["subid"];
+                        return 0;
+                    if (uint.TryParse(this["subid"], out uint subID))
+                        return subID;
+                    else
+                        return 0;
                 }
             }
         }
