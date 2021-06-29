@@ -10,7 +10,7 @@ namespace ASFGameBuyPlugin
 {
     internal static class Commands
     {
-        internal static async Task<string> BuyGameCommandAsync(ulong steamID, string botsQuery, uint appID, uint subID)
+        internal static async Task<string> BuyGameCommandAsync(ulong steamID, string botsQuery, uint appID, uint subID, bool isBundle)
         {
             if (string.IsNullOrWhiteSpace(botsQuery))
                 throw new ArgumentNullException($"{botsQuery} is empty");
@@ -43,9 +43,8 @@ namespace ASFGameBuyPlugin
 
                 SteamStore steamStore = new(bot);
 
-                bot.ArchiLogger.LogGenericInfo($"Buying {appID} / {subID}");
 
-                if (await steamStore.BuyGameAsync(appID, subID))
+                if (await steamStore.BuyGameAsync(appID, subID, isBundle))
                 {
                     stringBuilder.AppendLine($"<{bot.BotName}> Purchased {appID} / {subID}");
                     bot.ArchiLogger.LogGenericInfo($"Purchased {appID} / {subID}");

@@ -14,7 +14,7 @@ namespace ASFGameBuyPlugin
         private Bot Bot;
         internal SteamStore(Bot bot) => Bot = bot;
 
-        internal async Task<bool> BuyGameAsync(uint appID, uint subID)
+        internal async Task<bool> BuyGameAsync(uint appID, uint subID, bool isBundle)
         {
             if (appID == 0 || subID == 0)
                 return false;
@@ -27,15 +27,24 @@ namespace ASFGameBuyPlugin
             AppInfo? suitaleAppInfo = null;
             foreach (var appInfo in appInfos)
             {
-                Bot.ArchiLogger.LogGenericInfo($"Current subID: {appInfo.AppForm.SubID}.");
-
                 if (appInfo == null)
                     continue;
 
-                if (appInfo.AppForm.SubID == subID)
+                if (isBundle)
                 {
-                    suitaleAppInfo = appInfo;
-                    break;
+                    if (appInfo.AppForm.BundleID == subID)
+                    {
+                        suitaleAppInfo = appInfo;
+                        break;
+                    }
+                }
+                else
+                {
+                    if (appInfo.AppForm.SubID == subID)
+                    {
+                        suitaleAppInfo = appInfo;
+                        break;
+                    }
                 }
             }
 
@@ -44,6 +53,17 @@ namespace ASFGameBuyPlugin
                 Bot.ArchiLogger.LogGenericError($"Unable to found {subID} for {appID}");
                 return false;
             }
+
+            if ((long)suitaleAppInfo.Price > Bot.WalletBalance)
+            {
+                Bot.ArchiLogger.LogGenericError($"Unable to purchase {subID} for {appID}. Price: {suitaleAppInfo.Price / 100 :F2} > Bot balance: {Bot.WalletBalance / 100 :F2}");
+                return false;
+            }
+
+            if (isBundle)
+                Bot.ArchiLogger.LogGenericInfo($"Purchasing bundle {appID} / {subID}. Price: {suitaleAppInfo.Price / 100:F2}. Bot balance: {Bot.WalletBalance / 100:F2}");
+            else
+                Bot.ArchiLogger.LogGenericInfo($"Purchasing game {appID} / {subID}. Price: {suitaleAppInfo.Price / 100:F2}. Bot balance: {Bot.WalletBalance / 100:F2}");
 
             var checkoutLink = await AddToCartAsync(suitaleAppInfo);
             if (checkoutLink == null)
@@ -110,22 +130,27 @@ namespace ASFGameBuyPlugin
                 return null;
             }
 
-            const string BUY_FORM_SELECTOR = ".game_area_purchase_game_wrapper > .game_area_purchase_game form";
-            var buyForms = response.Content.QuerySelectorAll(BUY_FORM_SELECTOR);
+            const string BUY_SELECTOR = ".game_area_purchase_game_wrapper > .game_area_purchase_game";
+            var buyElements = response.Content.QuerySelectorAll(BUY_SELECTOR);
 
-            if (buyForms == null || buyForms.Length == 0)
+            if (buyElements == null || buyElements.Length == 0)
             {
-                Bot.ArchiLogger.LogGenericError($"No buy form found");
+                Bot.ArchiLogger.LogGenericError($"No buy elements found");
                 return null;
             }
 
-            List<AppInfo> appInfos = new(buyForms.Length);
-            foreach (var form in buyForms)
+            List<AppInfo> appInfos = new(buyElements.Length);
+            foreach (var buyElement in buyElements)
             {
-                if (form == null)
+                if (buyElement == null)
                     continue;
 
-                var inputs = form.QuerySelectorAll("input");
+                var buyForm = buyElement.QuerySelector("form");
+
+                if (buyForm == null)
+                    continue;
+
+                var inputs = buyForm.QuerySelectorAll("input");
                 if (inputs == null || inputs.Length == 0)
                     continue;
 
@@ -139,18 +164,15 @@ namespace ASFGameBuyPlugin
                     string value = input.GetAttribute("value");
 
                     if (!string.IsNullOrEmpty(name) && !string.IsNullOrEmpty(value))
-                    {
-                        Bot.ArchiLogger.LogGenericInfo($"Added: {name} / {value}");
                         serializableForm.Add(name, value);
-                    }
                 }
 
-                // SubID  has the highest priority for the plugin to work
-                if (serializableForm.SubID == 0)
+                // SubID or BundleID has the highest priority for the plugin to work
+                if (serializableForm.SubID == 0 && serializableForm.BundleID == 0)
                     continue;
 
                 const string PRICE_ATTRIBUTE = "data-price-final";
-                var purchaseElement = form.QuerySelector($".game_purchase_action [{PRICE_ATTRIBUTE}]");
+                var purchaseElement = buyElement.QuerySelector($".game_purchase_action [{PRICE_ATTRIBUTE}]");
 
                 if (purchaseElement == null)
                     continue;
@@ -170,17 +192,25 @@ namespace ASFGameBuyPlugin
 
         private async Task<Uri?> AddToCartAsync(AppInfo appInfo)
         {
-            if (appInfo.AppForm.Count == 0 || appInfo.AppForm.SubID == 0)
+            if (appInfo.AppForm.Count == 0 || (appInfo.AppForm.SubID == 0 && appInfo.AppForm.BundleID == 0))
                 throw new ArgumentException($"{nameof(appInfo)} is invalid");
+
+            if (!Bot.IsConnectedAndLoggedOn)
+            {
+                Bot.ArchiLogger.LogGenericError("Is currently not logged on");
+                return null;
+            }
 
             const string CART_URL = "/cart/";
             Uri cartUri = new(ArchiWebHandler.SteamStoreURL, CART_URL);
 
             var response = await Bot.ArchiWebHandler.UrlPostToHtmlDocumentWithSession(cartUri, data: appInfo.AppForm, referer: appInfo.Referer);
 
+            var subID = appInfo.AppForm.IsBundle ? appInfo.AppForm.BundleID : appInfo.AppForm.SubID;
+
             if (response == null || response.StatusCode != HttpStatusCode.OK)
             {
-                Bot.ArchiLogger.LogGenericError($"Unable to add {appInfo.AppForm.SubID} form to cart");
+                Bot.ArchiLogger.LogGenericError($"Unable to add {subID} form to cart");
                 return null;
             }
 
@@ -189,7 +219,7 @@ namespace ASFGameBuyPlugin
 
             if (btn == null)
             {
-                Bot.ArchiLogger.LogGenericError($"Unable to find purchase link for {appInfo.AppForm.SubID} form");
+                Bot.ArchiLogger.LogGenericError($"Unable to find purchase link for {subID} form");
                 return null;
             }
 
@@ -197,7 +227,7 @@ namespace ASFGameBuyPlugin
 
             if (string.IsNullOrWhiteSpace(purchaseLink))
             {
-                Bot.ArchiLogger.LogGenericError($"Unable to get purchase link for {appInfo.AppForm.SubID} form");
+                Bot.ArchiLogger.LogGenericError($"Unable to get purchase link for {subID} form");
                 return null;
             }
 
@@ -206,6 +236,12 @@ namespace ASFGameBuyPlugin
 
         private async Task<TransactionInfo?> CheckoutAsync(Uri checkoutUri)
         {
+            if (!Bot.IsConnectedAndLoggedOn)
+            {
+                Bot.ArchiLogger.LogGenericError("Is currently not logged on");
+                return null;
+            }
+
             var response = await Bot.ArchiWebHandler.WebBrowser.UrlGetToHtmlDocument(checkoutUri);
 
             if (response == null || response.StatusCode != HttpStatusCode.OK)
@@ -289,6 +325,12 @@ namespace ASFGameBuyPlugin
             if (transactionInfo.ShoppingCart == 0 || string.IsNullOrWhiteSpace(transactionInfo.ShippingCountry) || string.IsNullOrWhiteSpace(transactionInfo.PaymentMethod))
                 throw new ArgumentException($"{nameof(transactionInfo)} is invalid");
 
+            if (!Bot.IsConnectedAndLoggedOn)
+            {
+                Bot.ArchiLogger.LogGenericError("Is currently not logged on");
+                return null;
+            }
+
             Dictionary<string, string> postData = new()
             {
                 { "gidShoppingCart", transactionInfo.ShoppingCart.ToString() },
@@ -364,7 +406,13 @@ namespace ASFGameBuyPlugin
             if (string.IsNullOrWhiteSpace(initTransactionJsonResponse.TransactionID))
                 throw new ArgumentException($"{nameof(initTransactionJsonResponse)} is invalid");
 
-            string getFinalPriceUrl = $"/checkout/getfinalprice/?count=1&transid={initTransactionJsonResponse.TransactionID}6&purchasetype=self&microtxnid=-1&cart={transactionInfo.ShoppingCart}&gidReplayOfTransID={transactionInfo.TransactionID}";
+            if (!Bot.IsConnectedAndLoggedOn)
+            {
+                Bot.ArchiLogger.LogGenericError("Is currently not logged on");
+                return null;
+            }
+
+            string getFinalPriceUrl = $"/checkout/getfinalprice/?count=1&transid={initTransactionJsonResponse.TransactionID}&purchasetype=self&microtxnid=-1&cart={transactionInfo.ShoppingCart}&gidReplayOfTransID={transactionInfo.TransactionID}";
             Uri uri = new(ArchiWebHandler.SteamStoreURL, getFinalPriceUrl);
 
             var response = await Bot.ArchiWebHandler.WebBrowser.UrlGetToJsonObject<JsonData.FinalPriceJsonResponse>(uri, referer: referer);
@@ -388,6 +436,12 @@ namespace ASFGameBuyPlugin
         {
             if (string.IsNullOrWhiteSpace(initTransactionJsonResponse.TransactionID))
                 throw new ArgumentException($"{nameof(initTransactionJsonResponse)} is invalid");
+
+            if (!Bot.IsConnectedAndLoggedOn)
+            {
+                Bot.ArchiLogger.LogGenericError("Is currently not logged on");
+                return false;
+            }
 
             const string FINALIZE_TRANSACTION_URL = "/checkout/finalizetransaction/";
             Uri uri = new(ArchiWebHandler.SteamStoreURL, FINALIZE_TRANSACTION_URL);
@@ -434,6 +488,21 @@ namespace ASFGameBuyPlugin
                         return 0;
                 }
             }
+
+            internal uint BundleID
+            {
+                get
+                {
+                    if (!IsBundle)
+                        return 0;
+                    if (uint.TryParse(this["bundleid"], out uint bundleID))
+                        return bundleID;
+                    else
+                        return 0;
+                }
+            }
+
+            internal bool IsBundle => ContainsKey("bundleid");
         }
 
         internal class TransactionInfo
