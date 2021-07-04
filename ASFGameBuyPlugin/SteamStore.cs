@@ -1,7 +1,8 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Linq;
-using System.Text;
+using System.Text.RegularExpressions;
+using System.Web;
 using System.Net;
 using System.Threading.Tasks;
 using ArchiSteamFarm.Steam;
@@ -83,6 +84,59 @@ namespace ASFGameBuyPlugin
 
             var finalizeTransaction = await FinalizeTransactionAsync(initTransactionInfo, checkoutLink);
             return finalizeTransaction;
+        }
+
+        internal bool ClearCart()
+        {
+            const string SHOPPING_CART_GID = "shoppingCartGID";
+
+            var cookies = Bot.ArchiWebHandler.WebBrowser.CookieContainer.GetCookies(ArchiWebHandler.SteamStoreURL);
+            if (cookies == null)
+            {
+                Bot.ArchiLogger.LogGenericError("Unable to get cookies container");
+                return false;
+            }
+
+            foreach (Cookie cookie in cookies)
+            {
+                if (cookie.Name == SHOPPING_CART_GID)
+                {
+                    if (cookie.Value == "-1")
+                    {
+                        Bot.ArchiLogger.LogGenericError("No need to clear shopping cart");
+                        return false;
+                    }
+
+                    cookie.Value = "-1";
+                    return true;
+                }
+            }
+
+            Bot.ArchiLogger.LogGenericError($"Unable to find \"{SHOPPING_CART_GID}\" cookie");
+            return false;
+        }
+
+        internal async Task<bool> BuyInGameItemAsync(uint appID, ulong itemID, uint quantity)
+        {
+            if (appID == 0 || itemID == 0)
+                return false;
+
+            var inGameInfo = await GetInGameInfoAsync(appID, itemID, quantity);
+
+            if (inGameInfo == null)
+                return false;
+
+            if ((long)inGameInfo.Price > Bot.WalletBalance)
+            {
+                Bot.ArchiLogger.LogGenericError($"Unable to purchase {itemID} (x{quantity}) for {appID}. Price: {inGameInfo.Price / 100:F2} > Bot balance: {Bot.WalletBalance / 100:F2}");
+                return false;
+            }
+
+            Bot.ArchiLogger.LogGenericInfo($"Purchasing in-game item {appID} / {itemID} / {quantity}. Price: {inGameInfo.Price / 100:F2}. Bot balance: {Bot.WalletBalance / 100:F2}");
+
+            inGameInfo.InGameForm.Approved = true;
+
+            return await ApproveInGamePurchaseAsync(inGameInfo.InGameForm);
         }
 
         private async Task<AppInfo[]?> GetAppInfoAsync(uint appID)
@@ -472,7 +526,128 @@ namespace ASFGameBuyPlugin
             return true;
         }
 
+        internal async Task<InGameInfo?> GetInGameInfoAsync(uint appID, ulong itemID, uint quantity)
+        {
+            if (appID == 0)
+                throw new ArgumentException($"{nameof(appID)} is invalid");
+
+            if (itemID == 0)
+                throw new ArgumentException($"{nameof(itemID)} is invalid");
+
+            if (!Bot.IsConnectedAndLoggedOn)
+            {
+                Bot.ArchiLogger.LogGenericError("Is currently not logged on");
+                return null;
+            }
+
+            Uri uri = new(ArchiWebHandler.SteamStoreURL, $"/buyitem/{appID}/{itemID}/{quantity}");
+
+            var response = await Bot.ArchiWebHandler.WebBrowser.UrlGetToHtmlDocument(uri);
+
+            if (response == null || response.StatusCode != HttpStatusCode.OK)
+            {
+                Bot.ArchiLogger.LogGenericError($"Unable to initiate in-game purchase {appID} / {itemID} / {quantity}");
+                return null;
+            }
+
+            const string FORM_SELECTOR = "#form_authtxn";
+            var form = response.Content.QuerySelector(FORM_SELECTOR);
+
+            if (form == null)
+            {
+                Bot.ArchiLogger.LogGenericError($"Unable to find buy form {appID} / {itemID}");
+                return null;
+            }
+
+            var inputs = form.QuerySelectorAll("input");
+
+            if (inputs == null)
+            {
+                Bot.ArchiLogger.LogGenericError($"Unable to find inputs from form {appID} / {itemID}");
+                return null;
+            }
+
+            InGameForm serializableForm = new();
+
+            foreach (var input in inputs)
+            {
+                if (input == null)
+                    continue;
+
+                string name = input.GetAttribute("name");
+                string value = input.GetAttribute("value");
+
+                if (!string.IsNullOrEmpty(name) && !string.IsNullOrEmpty(value))
+                    serializableForm.Add(name, value);
+            }
+
+            if (serializableForm.Count == 0 || serializableForm.TransactionID == 0)
+            {
+                Bot.ArchiLogger.LogGenericError($"Serializable form is empty {appID} / {itemID}");
+                return null;
+            }
+
+            const string PRICE_SELECTOR = "#review_subtotal_value";
+            var priceElement = response.Content.QuerySelector(PRICE_SELECTOR);
+
+            if (priceElement == null)
+            {
+                Bot.ArchiLogger.LogGenericError($"Unable to find total price {appID} / {itemID}");
+                return null;
+            }
+
+            if (string.IsNullOrWhiteSpace(priceElement.TextContent))
+            {
+                Bot.ArchiLogger.LogGenericError($"Price text is empty {appID} / {itemID}");
+                return null;
+            }
+
+            Match priceMatch = Regex.Match(priceElement.TextContent, @"[0-9.]+");
+
+            if (!priceMatch.Success)
+            {
+                Bot.ArchiLogger.LogGenericError($"Unable to find price substring {appID} / {itemID}");
+                return null;
+            }
+
+            if (!double.TryParse(priceMatch.Value, out double price))
+            {
+                Bot.ArchiLogger.LogGenericError($"Unable to get total price {appID} / {itemID}");
+                return null;
+            }
+
+            return new((ulong)(price * 100), serializableForm);
+        }
+
+        private async Task<bool> ApproveInGamePurchaseAsync(InGameForm inGameForm)
+        {
+            if (inGameForm.TransactionID == 0)
+                throw new ArgumentException($"{nameof(inGameForm)} is invalid");
+
+            if (!Bot.IsConnectedAndLoggedOn)
+            {
+                Bot.ArchiLogger.LogGenericError("Is currently not logged on");
+                return false;
+            }
+
+            Uri referer = new(ArchiWebHandler.SteamStoreURL, $"/checkout/approvetxn/{inGameForm.TransactionID}/?returnurl={HttpUtility.UrlEncode(inGameForm["returnurl"])}&canceledurl=https%3a%2f%2fstore.steampowered.com%2f");
+            Uri approve = new(ArchiWebHandler.SteamStoreURL, "/checkout/approvetxnsubmit");
+
+            var response = await Bot.ArchiWebHandler.WebBrowser.UrlPostToHtmlDocument(approve, data: inGameForm, referer: referer);
+
+            if (response == null)
+            {
+                Bot.ArchiLogger.LogGenericError($"Unable to approve transaction {inGameForm.TransactionID}");
+                return false;
+            }
+
+
+
+            return response.StatusCode == HttpStatusCode.OK;
+        }
+
         internal record AppInfo(ulong Price, AppForm AppForm, Uri Referer);
+        internal record InGameInfo(ulong Price, InGameForm InGameForm);
 
         internal class AppForm: Dictionary<string, string>
         {
@@ -503,6 +678,43 @@ namespace ASFGameBuyPlugin
             }
 
             internal bool IsBundle => ContainsKey("bundleid");
+        }
+
+        internal class InGameForm: Dictionary<string, string>
+        {
+            internal ulong TransactionID
+            {
+                get
+                {
+                    if (!ContainsKey("transaction_id"))
+                        return 0;
+                    if (ulong.TryParse(this["transaction_id"], out ulong transactionID))
+                        return transactionID;
+                    else
+                        return 0;
+                }
+            }
+
+            internal bool Approved
+            {
+                get
+                {
+                    if (!ContainsKey("approved"))
+                        return false;
+                    if (this["approved"] == "1")
+                        return true;
+                    else
+                        return false;
+                }
+
+                set
+                {
+                    if (!ContainsKey("approved"))
+                        return;
+
+                    this["approved"] = value ? "1" : "0";
+                }
+            }
         }
 
         internal class TransactionInfo
