@@ -13,16 +13,27 @@ namespace ASFGameBuyPlugin
     internal sealed class SteamStore
     {
         private Bot Bot;
-        internal SteamStore(Bot bot) => Bot = bot;
+        internal SteamStore(Bot bot)
+        {
+            Bot = bot;
 
-        internal async Task<bool> BuyGameAsync(uint appID, uint subID, bool isBundle)
+            // Bypass age check by set Jan-1-1990 cookie header
+            Bot.ArchiWebHandler.WebBrowser.CookieContainer.Add(new Cookie()
+            {
+                Name = "birthtime",
+                Value = "628466401",
+                Domain = ArchiWebHandler.SteamStoreURL.Host
+            });
+        }
+
+        internal async Task<bool> BuyGameAsync(uint appID, uint subID)
         {
             if (appID == 0 || subID == 0)
                 return false;
 
-            var appInfos = await GetAppInfoAsync(appID);
+            var (appInfos, referer) = await GetAppInfoAsync(appID);
 
-            if (appInfos == null)
+            if (appInfos == null || referer == null)
                 return false;
 
             AppInfo? suitaleAppInfo = null;
@@ -31,21 +42,10 @@ namespace ASFGameBuyPlugin
                 if (appInfo == null)
                     continue;
 
-                if (isBundle)
+                if (appInfo.AppForm.SubID == subID)
                 {
-                    if (appInfo.AppForm.BundleID == subID)
-                    {
-                        suitaleAppInfo = appInfo;
-                        break;
-                    }
-                }
-                else
-                {
-                    if (appInfo.AppForm.SubID == subID)
-                    {
-                        suitaleAppInfo = appInfo;
-                        break;
-                    }
+                    suitaleAppInfo = appInfo;
+                    break;
                 }
             }
 
@@ -61,12 +61,39 @@ namespace ASFGameBuyPlugin
                 return false;
             }
 
-            if (isBundle)
-                Bot.ArchiLogger.LogGenericInfo($"Purchasing bundle {appID} / {subID}. Price: {suitaleAppInfo.Price / 100:F2}. Bot balance: {Bot.WalletBalance / 100:F2}");
-            else
-                Bot.ArchiLogger.LogGenericInfo($"Purchasing game {appID} / {subID}. Price: {suitaleAppInfo.Price / 100:F2}. Bot balance: {Bot.WalletBalance / 100:F2}");
 
-            var checkoutLink = await AddToCartAsync(suitaleAppInfo);
+            Bot.ArchiLogger.LogGenericInfo($"Purchasing game {appID} / {subID}. Price: {suitaleAppInfo.Price / 100:F2}. Bot balance: {Bot.WalletBalance / 100:F2}");
+
+            return await ProceedPurchase(suitaleAppInfo, referer);
+        }
+
+        internal async Task<bool> BuyBundleAsync(uint bundleID)
+        {
+            if (bundleID == 0)
+                return false;
+
+            var (appInfo, referer) = await GetBundleInfoAsync(bundleID);
+
+            if (appInfo == null || referer == null)
+                return false;
+
+            if ((long)appInfo.Price > Bot.WalletBalance)
+            {
+                Bot.ArchiLogger.LogGenericError($"Unable to purchase bundle {bundleID}. Price: {appInfo.Price / 100:F2} > Bot balance: {Bot.WalletBalance / 100:F2}");
+                return false;
+            }
+
+
+            Bot.ArchiLogger.LogGenericInfo($"Purchasing bundle {bundleID}. Price: {appInfo.Price / 100:F2}. Bot balance: {Bot.WalletBalance / 100:F2}");
+
+            ClearCart();
+
+            return await ProceedPurchase(appInfo, referer);
+        }
+
+        private async Task<bool> ProceedPurchase(AppInfo appInfo, Uri referer)
+        {
+            var checkoutLink = await AddToCartAsync(appInfo, referer);
             if (checkoutLink == null)
                 return false;
 
@@ -83,6 +110,9 @@ namespace ASFGameBuyPlugin
                 return false;
 
             var finalizeTransaction = await FinalizeTransactionAsync(initTransactionInfo, checkoutLink);
+
+            ClearCart();
+
             return finalizeTransaction;
         }
 
@@ -93,7 +123,7 @@ namespace ASFGameBuyPlugin
             var cookies = Bot.ArchiWebHandler.WebBrowser.CookieContainer.GetCookies(ArchiWebHandler.SteamStoreURL);
             if (cookies == null)
             {
-                Bot.ArchiLogger.LogGenericError("Unable to get cookies container");
+                Bot.ArchiLogger.LogGenericWarning("Unable to get cookies container");
                 return false;
             }
 
@@ -103,7 +133,7 @@ namespace ASFGameBuyPlugin
                 {
                     if (cookie.Value == "-1")
                     {
-                        Bot.ArchiLogger.LogGenericError("No need to clear shopping cart");
+                        Bot.ArchiLogger.LogGenericWarning("No need to clear shopping cart");
                         return false;
                     }
 
@@ -112,7 +142,7 @@ namespace ASFGameBuyPlugin
                 }
             }
 
-            Bot.ArchiLogger.LogGenericError($"Unable to find \"{SHOPPING_CART_GID}\" cookie");
+            Bot.ArchiLogger.LogGenericWarning($"Unable to find \"{SHOPPING_CART_GID}\" cookie");
             return false;
         }
 
@@ -139,7 +169,7 @@ namespace ASFGameBuyPlugin
             return await ApproveInGamePurchaseAsync(inGameInfo.InGameForm);
         }
 
-        private async Task<AppInfo[]?> GetAppInfoAsync(uint appID)
+        private async Task<(AppInfo[]?, Uri?)> GetAppInfoAsync(uint appID)
         {
             if (appID == 0)
                 throw new ArgumentException($"{nameof(appID)} cannot be 0");
@@ -147,25 +177,16 @@ namespace ASFGameBuyPlugin
             if (!Bot.IsConnectedAndLoggedOn)
             {
                 Bot.ArchiLogger.LogGenericError("Is currently not logged on");
-                return null;
+                return (null, null);
             }
 
-            const string STORE_URL = "/app/{0}/";
-            Uri storeUri = new(ArchiWebHandler.SteamStoreURL, string.Format(STORE_URL, appID));
-
-            // Bypass age check by set Jan-1-1990 cookie header
-            Bot.ArchiWebHandler.WebBrowser.CookieContainer.Add(new Cookie()
-            {
-                Name = "birthtime",
-                Value = "628466401",
-                Domain = ArchiWebHandler.SteamStoreURL.Host
-            });
+            Uri storeUri = new(ArchiWebHandler.SteamStoreURL, $"/app/{appID}/");
 
             var response = await Bot.ArchiWebHandler.UrlGetToHtmlDocumentWithSession(storeUri);
             if (response == null || response.StatusCode != HttpStatusCode.OK)
             {
                 Bot.ArchiLogger.LogGenericError($"Unable to download app {appID} page");
-                return null;
+                return (null, null);
             }
 
             const string META_SELECTOR = "meta[property = 'og:url']";
@@ -174,14 +195,14 @@ namespace ASFGameBuyPlugin
             if (meta == null)
             {
                 Bot.ArchiLogger.LogGenericError($"Unable to get link for {appID} page. Selector null");
-                return null;
+                return (null, null);
             }
 
             string refererLink = meta.GetAttribute("content");
             if (string.IsNullOrWhiteSpace(refererLink))
             {
                 Bot.ArchiLogger.LogGenericError($"Unable to get link for {appID} page. Content is empty");
-                return null;
+                return (null, null);
             }
 
             const string BUY_SELECTOR = ".game_area_purchase_game_wrapper > .game_area_purchase_game";
@@ -190,7 +211,7 @@ namespace ASFGameBuyPlugin
             if (buyElements == null || buyElements.Length == 0)
             {
                 Bot.ArchiLogger.LogGenericError($"No buy elements found");
-                return null;
+                return (null, null);
             }
 
             List<AppInfo> appInfos = new(buyElements.Length);
@@ -221,8 +242,8 @@ namespace ASFGameBuyPlugin
                         serializableForm.Add(name, value);
                 }
 
-                // SubID or BundleID has the highest priority for the plugin to work
-                if (serializableForm.SubID == 0 && serializableForm.BundleID == 0)
+                // SubID has the highest priority
+                if (serializableForm.SubID == 0)
                     continue;
 
                 const string PRICE_ATTRIBUTE = "data-price-final";
@@ -238,13 +259,118 @@ namespace ASFGameBuyPlugin
                 if (!ulong.TryParse(priceString, out ulong price))
                     continue;
 
-                appInfos.Add(new (price, serializableForm, new(refererLink)));
+                appInfos.Add(new (price, serializableForm));
             }
 
-            return appInfos.ToArray();
+            return (appInfos.ToArray(), new(refererLink));
         }
 
-        private async Task<Uri?> AddToCartAsync(AppInfo appInfo)
+        private async Task<(AppInfo?, Uri?)> GetBundleInfoAsync(uint bundleID)
+        {
+            if (bundleID == 0)
+                throw new ArgumentException($"{nameof(bundleID)} cannot be 0");
+
+            if (!Bot.IsConnectedAndLoggedOn)
+            {
+                Bot.ArchiLogger.LogGenericError("Is currently not logged on");
+                return (null, null);
+            }
+
+            Uri storeUri = new(ArchiWebHandler.SteamStoreURL, $"/bundle/{bundleID}/");
+
+            var response = await Bot.ArchiWebHandler.UrlGetToHtmlDocumentWithSession(storeUri);
+            if (response == null || response.StatusCode != HttpStatusCode.OK)
+            {
+                Bot.ArchiLogger.LogGenericError($"Unable to download bundle {bundleID} page");
+                return (null, null);
+            }
+
+            const string META_SELECTOR = "meta[property = 'og:url']";
+            var meta = response.Content.QuerySelector(META_SELECTOR);
+
+            if (meta == null)
+            {
+                Bot.ArchiLogger.LogGenericError($"Unable to get link for {bundleID} page. Selector null");
+                return (null, null);
+            }
+
+            string refererLink = meta.GetAttribute("content");
+            if (string.IsNullOrWhiteSpace(refererLink))
+            {
+                Bot.ArchiLogger.LogGenericError($"Unable to get link for {bundleID} page. Content is empty");
+                return (null, null);
+            }
+
+            const string BUY_SELECTOR = "#game_area_purchase > .game_area_purchase_game.bundle.ds_no_flags[data-ds-bundle-data]";
+            var buyElement = response.Content.QuerySelector(BUY_SELECTOR);
+
+            if (buyElement == null)
+            {
+                Bot.ArchiLogger.LogGenericError($"No buy elements found");
+                return (null, null);
+            }
+
+            var buyForm = buyElement.QuerySelector("form");
+
+            if (buyForm == null)
+            {
+                Bot.ArchiLogger.LogGenericError($"No buy form found");
+                return (null, null);
+            }
+
+            var inputs = buyForm.QuerySelectorAll("input");
+            if (inputs == null || inputs.Length == 0)
+            {
+                Bot.ArchiLogger.LogGenericError("No inputs found");
+                return (null, null);
+            }
+
+            AppForm serializableForm = new();
+            foreach (var input in inputs)
+            {
+                if (input == null)
+                    continue;
+
+                string name = input.GetAttribute("name");
+                string value = input.GetAttribute("value");
+
+                if (!string.IsNullOrEmpty(name) && !string.IsNullOrEmpty(value))
+                    serializableForm.Add(name, value);
+            }
+
+            // BundleID has the highest priority
+            if (serializableForm.BundleID == 0)
+            {
+                Bot.ArchiLogger.LogGenericError("Unable to find valid bundle");
+                return (null, null);
+            }
+
+            const string PRICE_ATTRIBUTE = "data-price-final";
+            var purchaseElement = buyElement.QuerySelector($".game_purchase_action [{PRICE_ATTRIBUTE}]");
+
+            if (purchaseElement == null)
+            {
+                Bot.ArchiLogger.LogGenericError("Unable to find purchase element");
+                return (null, null);
+            }
+
+            string priceString = purchaseElement.GetAttribute(PRICE_ATTRIBUTE);
+            if (string.IsNullOrWhiteSpace(priceString))
+            {
+                Bot.ArchiLogger.LogGenericError("Unable to find price attribute");
+                return (null, null);
+            }
+
+            if (!ulong.TryParse(priceString, out ulong price))
+            {
+                Bot.ArchiLogger.LogGenericError("Price string is not valid");
+                return (null, null);
+            }
+
+            return (new(price, serializableForm), new(refererLink));
+        }
+
+        private async Task<Uri?> AddToCartAsync(AppInfo appInfo, Uri referer)
         {
             if (appInfo.AppForm.Count == 0 || (appInfo.AppForm.SubID == 0 && appInfo.AppForm.BundleID == 0))
                 throw new ArgumentException($"{nameof(appInfo)} is invalid");
@@ -258,7 +384,7 @@ namespace ASFGameBuyPlugin
             const string CART_URL = "/cart/";
             Uri cartUri = new(ArchiWebHandler.SteamStoreURL, CART_URL);
 
-            var response = await Bot.ArchiWebHandler.UrlPostToHtmlDocumentWithSession(cartUri, data: appInfo.AppForm, referer: appInfo.Referer);
+            var response = await Bot.ArchiWebHandler.UrlPostToHtmlDocumentWithSession(cartUri, data: appInfo.AppForm, referer: referer);
 
             var subID = appInfo.AppForm.IsBundle ? appInfo.AppForm.BundleID : appInfo.AppForm.SubID;
 
@@ -646,7 +772,7 @@ namespace ASFGameBuyPlugin
             return response.StatusCode == HttpStatusCode.OK;
         }
 
-        internal record AppInfo(ulong Price, AppForm AppForm, Uri Referer);
+        internal record AppInfo(ulong Price, AppForm AppForm);
         internal record InGameInfo(ulong Price, InGameForm InGameForm);
 
         internal class AppForm: Dictionary<string, string>

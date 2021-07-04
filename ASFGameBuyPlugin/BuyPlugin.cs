@@ -26,9 +26,9 @@ namespace ASFGameBuyPlugin
             switch (command)
             {
                 case "buygame":
-                    return await Commands.BuyGameCommandAsync(steamID, args[1], uint.Parse(args[2]), uint.Parse(args[3]), false);
+                    return await Commands.BuyGameCommandAsync(steamID, args[1], uint.Parse(args[2]), uint.Parse(args[3]));
                 case "buybundle":
-                    return await Commands.BuyGameCommandAsync(steamID, args[1], uint.Parse(args[2]), uint.Parse(args[3]), true);
+                    return await Commands.BuyBundleCommandAsync(steamID, args[1], uint.Parse(args[2]));
                 case "buyingame":
                     return await Commands.BuyInGameCommandAsync(steamID, args[1], uint.Parse(args[2]), uint.Parse(args[3]), uint.Parse(args[4]));
                 default:
