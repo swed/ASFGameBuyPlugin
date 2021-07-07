@@ -1,9 +1,4 @@
-﻿using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
-using Newtonsoft.Json;
+﻿using Newtonsoft.Json;
 
 namespace ASFGameBuyPlugin.JsonData
 {
@@ -160,6 +155,11 @@ namespace ASFGameBuyPlugin.JsonData
     {
         [JsonProperty("bShowBRSpecificCreditCardError")]
         public bool ShowBRSpecificCreditCardError { get; set; }
+    }
+
+    public sealed class Configuration
+    {
+        public uint BuyTimeout { get; set; }
     }
 
 
